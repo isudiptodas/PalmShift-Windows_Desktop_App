@@ -18,12 +18,22 @@ class AuraWorker(QThread):
         self.camera_index = camera_index
         self.target_fps = target_fps
         self._effect = effect
+        self._draw_color = (255, 255, 255)
+        self._draw_actions: list[str] = []
         self._effect_lock = threading.Lock()
         self._running = False
 
     def set_effect(self, effect: str) -> None:
         with self._effect_lock:
             self._effect = effect
+
+    def set_draw_color(self, color: tuple[int, int, int]) -> None:
+        with self._effect_lock:
+            self._draw_color = color
+
+    def queue_draw_action(self, action: str) -> None:
+        with self._effect_lock:
+            self._draw_actions.append(action)
 
     def run(self) -> None:
         renderer = AuraEffectRenderer()
@@ -51,6 +61,12 @@ class AuraWorker(QThread):
                 frame = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
                 with self._effect_lock:
                     effect = self._effect
+                    draw_color = self._draw_color
+                    draw_actions = self._draw_actions[:]
+                    self._draw_actions.clear()
+                renderer.set_draw_color(draw_color)
+                for action in draw_actions:
+                    renderer.queue_draw_action(action)
                 processed = renderer.render(frame, effect)
                 self.frame_ready.emit(processed)
                 time.sleep(delay)

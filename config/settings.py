@@ -13,6 +13,7 @@ DEFAULT_SHORTCUTS = {
     "aura_water": "ctrl+alt+w",
     "aura_neon": "ctrl+alt+n",
     "aura_ink": "ctrl+alt+i",
+    "aura_draw": "ctrl+alt+d",
     "stop_active": "ctrl+alt+x",
 }
 
@@ -48,7 +49,7 @@ class SettingsStore:
             shortcuts = data.get("shortcuts", {})
             self.settings.shortcuts = {**DEFAULT_SHORTCUTS, **shortcuts}
             effect = str(data.get("last_aura_effect", "Water"))
-            self.settings.last_aura_effect = effect if effect in {"Water", "Neon", "Ink"} else "Water"
+            self.settings.last_aura_effect = effect if effect in {"Water", "Neon", "Ink", "Draw"} else "Water"
         except (OSError, json.JSONDecodeError, TypeError):
             self.settings = Settings()
             self.save()

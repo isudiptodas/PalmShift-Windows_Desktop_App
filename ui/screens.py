@@ -286,6 +286,8 @@ class ControlActiveScreen(QWidget):
 class AuraScreen(QWidget):
     back_clicked = Signal()
     effect_changed = Signal(str)
+    draw_color_changed = Signal(tuple)
+    draw_action_clicked = Signal(str)
     record_clicked = Signal()
     pause_clicked = Signal()
     stop_clicked = Signal()
@@ -312,6 +314,62 @@ class AuraScreen(QWidget):
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         camera_layout.addWidget(self.preview, 0, 0)
+
+        overlay_controls = QFrame()
+        overlay_controls.setObjectName("auraOverlayControls")
+        overlay_controls.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        overlay_layout = QVBoxLayout(overlay_controls)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+        overlay_layout.setSpacing(10)
+
+        self.draw_tools = QFrame()
+        self.draw_tools.setObjectName("drawTools")
+        draw_row = QHBoxLayout(self.draw_tools)
+        draw_row.setContentsMargins(0, 0, 0, 0)
+        draw_row.setSpacing(10)
+        self.color_buttons = []
+        colors = [
+            ("White", "#ffffff", (255, 255, 255)),
+            ("Black", "#050505", (5, 5, 5)),
+            ("Red", "#ff2b35", (53, 43, 255)),
+            ("Green", "#22c55e", (94, 197, 34)),
+            ("Blue", "#2563eb", (235, 99, 37)),
+            ("Yellow", "#facc15", (21, 204, 250)),
+            ("Purple", "#a855f7", (247, 85, 168)),
+            ("Pink", "#ec4899", (153, 72, 236)),
+            ("Orange", "#f97316", (22, 115, 249)),
+        ]
+        for index, (name, css_color, bgr) in enumerate(colors):
+            button = ClickButton()
+            button.setObjectName("colorSwatch")
+            button.setToolTip(name)
+            button.setCheckable(True)
+            button.setFixedSize(30, 30)
+            button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background: {css_color};
+                    border: 1px solid rgba(0, 0, 0, 0.28);
+                    border-radius: 15px;
+                }}
+                QPushButton:checked {{
+                    border: 3px solid #315CFF;
+                }}
+                """
+            )
+            button.clicked.connect(lambda checked=False, c=bgr, b=button: self._select_draw_color(c, b))
+            self.color_buttons.append(button)
+            draw_row.addWidget(button)
+            if index == 0:
+                button.setChecked(True)
+        draw_row.addSpacing(8)
+        for label, action in (("Undo", "undo"), ("Redo", "redo"), ("Clear Canvas", "clear")):
+            action_button = ClickButton(label)
+            action_button.setObjectName("drawActionButton")
+            action_button.setFixedHeight(34)
+            action_button.clicked.connect(lambda checked=False, a=action: self.draw_action_clicked.emit(a))
+            draw_row.addWidget(action_button)
+        overlay_layout.addWidget(self.draw_tools, alignment=Qt.AlignmentFlag.AlignCenter)
 
         controls = QFrame()
         controls.setObjectName("auraControls")
@@ -346,18 +404,30 @@ class AuraScreen(QWidget):
         control_row.addWidget(self.stop_button)
         control_row.addWidget(self.pause_button)
 
-        camera_layout.addWidget(controls, 0, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        overlay_layout.addWidget(controls, alignment=Qt.AlignmentFlag.AlignCenter)
+        camera_layout.addWidget(overlay_controls, 0, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
         layout.addWidget(self.camera_box, 1)
         self.set_recording_state(False, False)
+        self._update_draw_tools()
 
     def _select_effect(self, effect: str) -> None:
         self.selected_effect = effect
+        self._update_draw_tools()
         self.effect_changed.emit(effect)
 
     def select_effect(self, effect: str) -> None:
         self.selected_effect = effect
         for button in self.effect_group.buttons():
             button.setChecked(button.text() == effect)
+        self._update_draw_tools()
+
+    def _select_draw_color(self, color: tuple[int, int, int], active_button: ClickButton) -> None:
+        for button in self.color_buttons:
+            button.setChecked(button is active_button)
+        self.draw_color_changed.emit(color)
+
+    def _update_draw_tools(self) -> None:
+        self.draw_tools.setVisible(self.selected_effect == "Draw")
 
     def set_frame(self, frame) -> None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -417,6 +487,7 @@ class CommandsScreen(QWidget):
             ("CTRL + alt + X", "Close Palm Shift controls"),
             ("CTRL + alt + N", "Open Palm Shift aura mode (Neon effect)"),
             ("CTRL + alt + I", "Open Palm Shift aura mode (Ink effect)"),
+            ("CTRL + alt + D", "Open Palm Shift aura mode (Draw effect)"),
         ]
         for index, (key, body) in enumerate(rows):
             grid.addWidget(CommandCard(key, body), index // 2, index % 2)

@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
         self.aura_screen = AuraScreen(self.current_effect)
         self.aura_screen.back_clicked.connect(self.show_selection)
         self.aura_screen.effect_changed.connect(self._set_effect)
+        self.aura_screen.draw_color_changed.connect(self._set_draw_color)
+        self.aura_screen.draw_action_clicked.connect(self._queue_draw_action)
         self.aura_screen.record_clicked.connect(self._start_recording)
         self.aura_screen.pause_clicked.connect(self._toggle_recording_pause)
         self.aura_screen.stop_clicked.connect(self._stop_recording)
@@ -104,7 +106,6 @@ class MainWindow(QMainWindow):
         self.control_worker = ControlWorker(mode)
         self.control_worker.pointer_moved.connect(self.indicator.update_position)
         self.control_worker.error.connect(self._show_error)
-        self.control_worker.status.connect(lambda message: self.tray.showMessage("PalmShift", message))
         self.control_worker.start()
         self.control_active_screen = ControlActiveScreen(mode.value)
         self.control_active_screen.stop_clicked.connect(self.stop_active_mode)
@@ -114,7 +115,6 @@ class MainWindow(QMainWindow):
         self._update_control_timer()
         self._was_maximized_before_hide = self.isMaximized()
         self.showMinimized()
-        self.tray.showMessage("PalmShift", f"{mode.value} started. Use the tray or Ctrl+Alt+X to stop.")
 
     def stop_control_mode(self) -> None:
         if self.control_worker:
@@ -166,6 +166,16 @@ class MainWindow(QMainWindow):
         self.settings_store.set_last_aura_effect(effect)
         if self.camera_worker:
             self.camera_worker.set_effect(effect)
+
+    @Slot(tuple)
+    def _set_draw_color(self, color: tuple[int, int, int]) -> None:
+        if self.camera_worker:
+            self.camera_worker.set_draw_color(color)
+
+    @Slot(str)
+    def _queue_draw_action(self, action: str) -> None:
+        if self.camera_worker:
+            self.camera_worker.queue_draw_action(action)
 
     def _start_recording(self) -> None:
         if not self.aura_screen:
@@ -434,6 +444,31 @@ class MainWindow(QMainWindow):
             QFrame#auraControls {
                 background: transparent;
                 margin-bottom: 24px;
+            }
+            QFrame#auraOverlayControls {
+                background: transparent;
+            }
+            QFrame#drawTools {
+                background: transparent;
+                border-radius: 12px;
+                padding: 8px;
+            }
+            QPushButton#colorSwatch {
+                border: 2px solid rgba(255, 255, 255, 0.55);
+                border-radius: 15px;
+            }
+            QPushButton#colorSwatch:checked {
+                border: 3px solid #ffffff;
+            }
+            QPushButton#drawActionButton {
+                background: rgba(0, 0, 0, 0.28);
+                border: 1px solid rgba(255, 255, 255, 0.72);
+                border-radius: 9px;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 800;
+                padding-left: 12px;
+                padding-right: 12px;
             }
             QPushButton#effectButton {
                 background: rgba(105, 105, 116, 0.78);

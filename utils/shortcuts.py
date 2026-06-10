@@ -26,6 +26,7 @@ class ShortcutManager(QObject):
             self._add("aura_water", lambda: self.aura_effect_requested.emit("Water"))
             self._add("aura_neon", lambda: self.aura_effect_requested.emit("Neon"))
             self._add("aura_ink", lambda: self.aura_effect_requested.emit("Ink"))
+            self._add("aura_draw", lambda: self.aura_effect_requested.emit("Draw"))
             self._add("stop_active", self.stop_requested.emit)
         except Exception:
             self._keyboard = None
@@ -60,6 +61,7 @@ class ShortcutManager(QObject):
                 self.shortcuts.get("aura_water", "ctrl+alt+w"): lambda: self.aura_effect_requested.emit("Water"),
                 self.shortcuts.get("aura_neon", "ctrl+alt+n"): lambda: self.aura_effect_requested.emit("Neon"),
                 self.shortcuts.get("aura_ink", "ctrl+alt+i"): lambda: self.aura_effect_requested.emit("Ink"),
+                self.shortcuts.get("aura_draw", "ctrl+alt+d"): lambda: self.aura_effect_requested.emit("Draw"),
                 self.shortcuts.get("stop_active", "ctrl+alt+x"): self.stop_requested.emit,
             }
             hotkeys = {

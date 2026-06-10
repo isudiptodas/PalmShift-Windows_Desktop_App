@@ -6,7 +6,7 @@ import time
 import cv2
 import numpy as np
 
-EFFECTS = ("Water", "Neon", "Ink")
+EFFECTS = ("Water", "Neon", "Ink", "Draw")
 HAND_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -46,6 +46,7 @@ class AuraEffectRenderer:
         self._map_y = None
         self._neon_trails = []
         self._last_neon_points = {}
+        self._last_neon_seen = {}
         self._water_surface = None
         self._water_velocity = None
         self._water_mask = None
@@ -54,6 +55,21 @@ class AuraEffectRenderer:
         self._ink_velocity = None
         self._ink_drips = []
         self._last_ink_points = {}
+        self._draw_canvas = None
+        self._draw_alpha = None
+        self._draw_current: list[tuple[int, int]] = []
+        self._draw_last_point: tuple[float, float] | None = None
+        self._draw_last_seen_at = 0.0
+        self._draw_color = (255, 255, 255)
+        self._draw_undo = []
+        self._draw_redo = []
+        self._draw_action_queue: list[str] = []
+
+    def set_draw_color(self, color: tuple[int, int, int]) -> None:
+        self._draw_color = color
+
+    def queue_draw_action(self, action: str) -> None:
+        self._draw_action_queue.append(action)
 
     def close(self) -> None:
         if self._hands:
@@ -69,11 +85,15 @@ class AuraEffectRenderer:
                 return self._neon_contact(frame, [])
             if effect == "Ink":
                 return self._ink_contact(frame, [])
+            if effect == "Draw":
+                return self._draw_contact(frame, [])
             return self._water_contact(frame, [])
         if effect == "Neon":
             return self._neon_contact(frame, landmarks)
         if effect == "Ink":
             return self._ink_contact(frame, landmarks)
+        if effect == "Draw":
+            return self._draw_contact(frame, landmarks)
         return self._water_contact(frame, landmarks)
 
     def _landmark_points(self, frame) -> list[dict]:
@@ -245,18 +265,29 @@ class AuraEffectRenderer:
     def _neon_contact(self, frame, points):
         now = time.monotonic()
         colors = ((255, 20, 190), (80, 230, 255), (120, 255, 160), (255, 210, 90), (220, 110, 255))
-        contacts = self._contact_points(points)
+        contacts = self._neon_points(points)
+        active_ids = set()
         for contact_id, x, y in contacts:
-            point = (x, y)
+            active_ids.add(contact_id)
             previous = self._last_neon_points.get(contact_id)
             if previous is not None:
                 px, py = previous
-                if math.hypot(x - px, y - py) < 95:
+                point = (int(px + (x - px) * 0.56), int(py + (y - py) * 0.56))
+            else:
+                point = (x, y)
+            previous = self._last_neon_points.get(contact_id)
+            if previous is not None:
+                px, py = previous
+                distance = math.hypot(point[0] - px, point[1] - py)
+                if distance < 150:
                     color_index = abs(hash(contact_id)) % len(colors)
                     self._neon_trails.append((previous, point, colors[color_index], now))
             self._last_neon_points[contact_id] = point
-        if not contacts:
-            self._last_neon_points = {}
+            self._last_neon_seen[contact_id] = now
+        for contact_id in list(self._last_neon_points):
+            if contact_id not in active_ids and now - self._last_neon_seen.get(contact_id, 0.0) > 0.32:
+                self._last_neon_points.pop(contact_id, None)
+                self._last_neon_seen.pop(contact_id, None)
 
         self._neon_trails = [trail for trail in self._neon_trails if now - trail[3] <= 2.0]
         glow = np.zeros_like(frame)
@@ -272,6 +303,24 @@ class AuraEffectRenderer:
         glow = cv2.GaussianBlur(glow, (35, 35), 0)
         lit = cv2.addWeighted(frame, 0.94, glow, 1.25, 0)
         return cv2.addWeighted(lit, 1.0, core, 0.7, 0)
+
+    def _neon_points(self, points):
+        if not points or not isinstance(points[0], dict):
+            return self._contact_points(points)
+        contacts = []
+        for hand in points:
+            landmarks = hand.get("landmarks") or []
+            hand_id = hand.get("id", "hand")
+            if len(landmarks) >= 21:
+                for tip, name in ((8, "index"), (12, "middle"), (16, "ring"), (20, "pinky")):
+                    x, y = landmarks[tip]
+                    pip_y = landmarks[tip - 2][1]
+                    mcp_y = landmarks[tip - 3][1]
+                    if y < pip_y + 18 and y < mcp_y + 28:
+                        contacts.append((f"{hand_id}:{name}", int(x), int(y)))
+            else:
+                contacts.extend(hand.get("contacts", []))
+        return contacts
 
     def _ink_contact(self, frame, points):
         h, w = frame.shape[:2]
@@ -322,7 +371,7 @@ class AuraEffectRenderer:
         self._draw_ink_drips(source, h, w, now)
         fall = 5.4
         horizontal_flow = self._ink_velocity[:, :, 0] * 0.4 + np.sin((map_y * 0.035) + self._tick * 0.18) * self._ink_density * 0.55
-        vertical_flow = fall + self._ink_velocity[:, :, 1] * 0.36 + self._ink_density * 3.2
+        vertical_flow = np.maximum(2.8, fall + self._ink_velocity[:, :, 1] * 0.36 + self._ink_density * 3.2)
         advected = cv2.remap(
             self._ink_density,
             map_x - horizontal_flow,
@@ -351,6 +400,129 @@ class AuraEffectRenderer:
         composed = frame.astype(np.float32) * (1.0 - alpha) + ink_color * alpha
         composed = cv2.addWeighted(composed.astype(np.uint8), 1.0, shine.astype(np.uint8), 0.14, 0)
         return composed
+
+    def _draw_contact(self, frame, points):
+        h, w = frame.shape[:2]
+        if self._draw_canvas is None or self._draw_canvas.shape[:2] != (h, w):
+            self._draw_canvas = np.zeros_like(frame)
+            self._draw_alpha = np.zeros((h, w), dtype=np.float32)
+
+        self._apply_draw_actions()
+        eraser = self._eraser_hand(points)
+        if eraser:
+            self._finish_draw_stroke(save=True)
+            self._erase_with_palm(eraser, h, w)
+        else:
+            draw_point = self._draw_index_point(points)
+            if draw_point:
+                self._append_draw_point(draw_point)
+            else:
+                if time.monotonic() - self._draw_last_seen_at > 0.28:
+                    self._finish_draw_stroke(save=True)
+
+        display_canvas = self._draw_canvas.copy()
+        display_alpha = self._draw_alpha.copy()
+        if len(self._draw_current) >= 2:
+            self._paint_polyline(display_canvas, display_alpha, self._draw_current, self._draw_color, 5, 1.0)
+
+        alpha = np.clip(display_alpha, 0.0, 1.0)[..., None]
+        return (frame.astype(np.float32) * (1.0 - alpha) + display_canvas.astype(np.float32) * alpha).astype(np.uint8)
+
+    def _append_draw_point(self, point: tuple[int, int]) -> None:
+        self._draw_last_seen_at = time.monotonic()
+        if self._draw_last_point is None:
+            self._draw_last_point = (float(point[0]), float(point[1]))
+        sx, sy = self._draw_last_point
+        smoothed = (sx + (point[0] - sx) * 0.48, sy + (point[1] - sy) * 0.48)
+        self._draw_last_point = smoothed
+        next_point = (int(smoothed[0]), int(smoothed[1]))
+        if not self._draw_current or math.dist(next_point, self._draw_current[-1]) >= 2:
+            self._draw_current.append(next_point)
+
+    def _finish_draw_stroke(self, save: bool) -> None:
+        if len(self._draw_current) >= 2:
+            if save:
+                self._push_draw_undo()
+            self._paint_polyline(self._draw_canvas, self._draw_alpha, self._draw_current, self._draw_color, 5, 1.0)
+            self._draw_redo.clear()
+        self._draw_current = []
+        self._draw_last_point = None
+        self._draw_last_seen_at = 0.0
+
+    def _paint_polyline(self, canvas, alpha, points, color, thickness, opacity) -> None:
+        pts = np.array(points, dtype=np.int32)
+        cv2.polylines(canvas, [pts], False, color, thickness, cv2.LINE_AA)
+        stroke_alpha = np.zeros(alpha.shape, dtype=np.float32)
+        cv2.polylines(stroke_alpha, [pts], False, opacity, thickness, cv2.LINE_AA)
+        stroke_alpha = cv2.GaussianBlur(stroke_alpha, (0, 0), 0.45)
+        alpha[:] = np.maximum(alpha, np.clip(stroke_alpha, 0.0, 1.0))
+
+    def _erase_with_palm(self, hand, h: int, w: int) -> None:
+        mask = np.zeros((h, w), dtype=np.float32)
+        contour = hand.get("contour") or []
+        palm = hand.get("palm")
+        if len(contour) >= 4:
+            cv2.fillConvexPoly(mask, np.array(contour, dtype=np.int32), 1.0, cv2.LINE_AA)
+        elif palm:
+            cv2.circle(mask, palm, 42, 1.0, -1, cv2.LINE_AA)
+        mask = cv2.GaussianBlur(mask, (0, 0), 18)
+        self._draw_alpha *= 1.0 - np.clip(mask * 0.42, 0.0, 0.42)
+        self._draw_alpha[self._draw_alpha < 0.045] = 0.0
+        fade = self._draw_alpha[..., None]
+        self._draw_canvas = (self._draw_canvas.astype(np.float32) * np.clip(0.88 + fade * 0.12, 0.88, 1.0)).astype(np.uint8)
+
+    def _draw_index_point(self, points):
+        candidates = []
+        for hand in points:
+            landmarks = hand.get("landmarks") or []
+            if len(landmarks) < 21:
+                continue
+            extended = self._extended_fingers_from_pixels(landmarks)
+            if "index" in extended and len(extended) <= 2 and "middle" not in extended:
+                candidates.append(landmarks[8])
+        if len(candidates) == 1:
+            x, y = candidates[0]
+            return int(x), int(y)
+        return None
+
+    def _eraser_hand(self, points):
+        for hand in points:
+            landmarks = hand.get("landmarks") or []
+            if len(landmarks) >= 21:
+                extended = self._extended_fingers_from_pixels(landmarks)
+                if {"index", "middle", "ring", "pinky"}.issubset(set(extended)):
+                    return hand
+        return None
+
+    def _extended_fingers_from_pixels(self, landmarks):
+        fingers = []
+        if abs(landmarks[4][0] - landmarks[3][0]) > 16:
+            fingers.append("thumb")
+        for name, tip, pip in (("index", 8, 6), ("middle", 12, 10), ("ring", 16, 14), ("pinky", 20, 18)):
+            if landmarks[tip][1] < landmarks[pip][1] - 7:
+                fingers.append(name)
+        return fingers
+
+    def _push_draw_undo(self) -> None:
+        self._draw_undo.append((self._draw_canvas.copy(), self._draw_alpha.copy()))
+        if len(self._draw_undo) > 30:
+            self._draw_undo.pop(0)
+
+    def _apply_draw_actions(self) -> None:
+        while self._draw_action_queue:
+            action = self._draw_action_queue.pop(0)
+            self._finish_draw_stroke(save=True)
+            if action == "clear":
+                self._push_draw_undo()
+                self._draw_canvas[:] = 0
+                self._draw_alpha[:] = 0
+                self._draw_redo.clear()
+            elif action == "undo" and self._draw_undo:
+                self._draw_redo.append((self._draw_canvas.copy(), self._draw_alpha.copy()))
+                self._draw_canvas, self._draw_alpha = self._draw_undo.pop()
+            elif action == "redo" and self._draw_redo:
+                self._draw_undo.append((self._draw_canvas.copy(), self._draw_alpha.copy()))
+                self._draw_canvas, self._draw_alpha = self._draw_redo.pop()
 
     def _contact_points(self, points):
         if points and isinstance(points[0], dict):

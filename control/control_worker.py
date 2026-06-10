@@ -40,7 +40,9 @@ class ControlWorker(QThread):
             cap.set(cv2.CAP_PROP_FPS, 60)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self._running = True
-            self.status.emit(f"{self.mode.value} active")
+            self.status.emit("Dual-hand precision control active")
+            last_feedback = ""
+            last_feedback_at = 0.0
 
             while self._running:
                 ok, frame = cap.read()
@@ -48,12 +50,15 @@ class ControlWorker(QThread):
                     self.error.emit("PalmShift lost access to the webcam.")
                     break
                 frame = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
+                frame = cv2.flip(frame, 1)
                 state = tracker.process(frame)
-                if state.visible:
-                    x, y = mouse.apply(state)
-                    self.pointer_moved.emit(x, y, True)
-                else:
-                    self.pointer_moved.emit(0, 0, False)
+                x, y, visible, feedback = mouse.apply(state)
+                self.pointer_moved.emit(x, y, visible)
+                now = time.monotonic()
+                if feedback and feedback != last_feedback and now - last_feedback_at > 0.25:
+                    self.status.emit(feedback)
+                    last_feedback = feedback
+                    last_feedback_at = now
                 time.sleep(0.001)
         except Exception as exc:
             self.error.emit(str(exc))
